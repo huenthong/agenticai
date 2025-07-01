@@ -232,11 +232,29 @@ class DocumentProcessor:
             return "PDF processing not available. Install PyPDF2."
 
         try:
+            # Reset file pointer
+            file.seek(0)
             pdf_reader = PyPDF2.PdfReader(file)
             text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
+            
+            if len(pdf_reader.pages) == 0:
+                return "Error: PDF file appears to be empty or corrupted."
+            
+            for i, page in enumerate(pdf_reader.pages):
+                try:
+                    page_text = page.extract_text()
+                    if page_text.strip():  # Only add non-empty pages
+                        text += f"Page {i+1}:\n{page_text}\n\n"
+                except Exception as page_error:
+                    # Continue processing other pages if one fails
+                    text += f"Page {i+1}: Error extracting text - {str(page_error)}\n\n"
+                    continue
+            
+            if not text.strip():
+                return "Warning: No readable text found in PDF. The PDF might contain only images or be password protected."
+            
             return text
+            
         except Exception as e:
             return f"Error processing PDF: {str(e)}"
 
@@ -368,7 +386,9 @@ class RAGSystem:
             return False
 
         try:
-            self.embeddings_model = SentenceTransformer('all-MiniLM-L6-v2')
+            with st.spinner("Loading embeddings model... This may take a moment on first run."):
+                self.embeddings_model = SentenceTransformer('all-MiniLM-L6-v2')
+            st.success("Embeddings model loaded successfully!")
             return True
         except Exception as e:
             st.error(f"Error initializing embeddings model: {str(e)}")
@@ -377,29 +397,49 @@ class RAGSystem:
     def add_documents(self, documents: List[str]):
         """Add documents to the RAG system"""
         if not self.embeddings_model:
+            st.error("Embeddings model not initialized. Please initialize first.")
             return False
 
         try:
-            # Split documents into chunks
-            chunks = []
-            for doc in documents:
-                doc_chunks = self._split_text(doc)
-                chunks.extend(doc_chunks)
+            with st.spinner("Processing documents and generating embeddings..."):
+                # Filter out empty documents
+                valid_documents = [doc for doc in documents if doc and doc.strip()]
+                
+                if not valid_documents:
+                    st.warning("No valid text found in documents.")
+                    return False
 
-            # Generate embeddings
-            embeddings = self.embeddings_model.encode(chunks)
+                # Split documents into chunks
+                chunks = []
+                for doc in valid_documents:
+                    doc_chunks = self._split_text(doc)
+                    chunks.extend(doc_chunks)
 
-            # Create or update FAISS index
-            if self.index is None:
-                self.index = faiss.IndexFlatL2(embeddings.shape[1])
+                if not chunks:
+                    st.warning("No text chunks created from documents.")
+                    return False
 
-            self.index.add(embeddings.astype(np.float32))
-            self.documents.extend(chunks)
-            self.document_embeddings.extend(embeddings)
+                # Generate embeddings with progress
+                st.info(f"Generating embeddings for {len(chunks)} text chunks...")
+                embeddings = self.embeddings_model.encode(chunks, show_progress_bar=False)
 
-            return True
+                # Create or update FAISS index
+                if self.index is None:
+                    dimension = embeddings.shape[1]
+                    self.index = faiss.IndexFlatL2(dimension)
+                    st.info(f"Created new FAISS index with dimension {dimension}")
+
+                # Add embeddings to index
+                self.index.add(embeddings.astype(np.float32))
+                self.documents.extend(chunks)
+                self.document_embeddings.extend(embeddings)
+
+                st.success(f"Successfully added {len(chunks)} text chunks to the knowledge base!")
+                return True
+                
         except Exception as e:
             st.error(f"Error adding documents: {str(e)}")
+            st.exception(e)  # This will show the full stack trace
             return False
 
     def _split_text(self, text: str, chunk_size: int = 500, overlap: int = 50):
@@ -420,12 +460,15 @@ class RAGSystem:
             return []
 
         try:
+            if self.index.ntotal == 0:  # Check if index is empty
+                return []
+                
             query_embedding = self.embeddings_model.encode([query])
-            distances, indices = self.index.search(query_embedding.astype(np.float32), k)
+            distances, indices = self.index.search(query_embedding.astype(np.float32), min(k, self.index.ntotal))
 
             relevant_docs = []
             for idx in indices[0]:
-                if idx < len(self.documents):
+                if idx < len(self.documents) and idx >= 0:
                     relevant_docs.append(self.documents[idx])
 
             return relevant_docs
@@ -640,38 +683,63 @@ def main():
 
         if uploaded_files:
             if st.button("Process Documents"):
-                if not st.session_state.rag_system.embeddings_model:
-                    if st.session_state.rag_system.initialize_embeddings():
-                        st.success("Embeddings model initialized!")
-                    else:
-                        st.error("Failed to initialize embeddings model")
-                        st.stop()
+                try:
+                    # Initialize embeddings model if not already done
+                    if not st.session_state.rag_system.embeddings_model:
+                        if not st.session_state.rag_system.initialize_embeddings():
+                            st.error("Failed to initialize embeddings model. Please try again.")
+                            st.stop()
 
-                documents = []
-                for file in uploaded_files:
-                    if file.type == "application/pdf":
-                        text = DocumentProcessor.extract_text_from_pdf(file)
-                    elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                        text = DocumentProcessor.extract_text_from_docx(file)
-                    elif file.type == "text/plain":
-                        text = DocumentProcessor.extract_text_from_txt(file)
-                    elif file.type == "text/csv":
-                        text = DocumentProcessor.extract_text_from_csv(file)
-                    elif file.type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                                       "application/vnd.ms-excel"]:
-                        text = DocumentProcessor.extract_text_from_excel(file)
-                    else:
-                        st.warning(f"Unsupported file type: {file.type}")
-                        continue
+                    documents = []
+                    processing_success = True
+                    
+                    with st.spinner("Processing uploaded files..."):
+                        for file in uploaded_files:
+                            try:
+                                st.info(f"Processing: {file.name}")
+                                
+                                if file.type == "application/pdf":
+                                    text = DocumentProcessor.extract_text_from_pdf(file)
+                                elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                                    text = DocumentProcessor.extract_text_from_docx(file)
+                                elif file.type == "text/plain":
+                                    text = DocumentProcessor.extract_text_from_txt(file)
+                                elif file.type == "text/csv":
+                                    text = DocumentProcessor.extract_text_from_csv(file)
+                                elif file.type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                                                   "application/vnd.ms-excel"]:
+                                    text = DocumentProcessor.extract_text_from_excel(file)
+                                else:
+                                    st.warning(f"Unsupported file type: {file.type}")
+                                    continue
 
-                    documents.append(text)
-                    st.success(f"✅ Processed: {file.name}")
+                                # Check if text extraction was successful
+                                if text and not text.startswith("Error"):
+                                    documents.append(text)
+                                    st.success(f"✅ Extracted text from: {file.name}")
+                                else:
+                                    st.warning(f"⚠️ Could not extract text from: {file.name} - {text}")
+                                    processing_success = False
 
-                if documents:
-                    if st.session_state.rag_system.add_documents(documents):
-                        st.success(f"Successfully processed {len(documents)} documents!")
+                            except Exception as file_error:
+                                st.error(f"❌ Error processing {file.name}: {str(file_error)}")
+                                processing_success = False
+                                continue
+
+                    # Add documents to RAG system
+                    if documents:
+                        if st.session_state.rag_system.add_documents(documents):
+                            st.success(f"🎉 Successfully processed {len(documents)} documents and added to knowledge base!")
+                        else:
+                            st.error("Failed to add documents to knowledge base")
+                    elif not processing_success:
+                        st.error("No documents were successfully processed")
                     else:
-                        st.error("Failed to process documents")
+                        st.warning("No valid documents found to process")
+                        
+                except Exception as e:
+                    st.error(f"Critical error during document processing: {str(e)}")
+                    st.exception(e)
 
         # Database Info
         st.subheader("🗄️ Database Info")
@@ -685,6 +753,31 @@ def main():
         if st.button("Insert Sample Data"):
             insert_sample_data()
             st.success("Sample data inserted!")
+
+        # System Status
+        st.subheader("🔍 System Status")
+        with st.expander("View System Information"):
+            st.write("**Embeddings Model Status:**", 
+                    "✅ Loaded" if st.session_state.rag_system.embeddings_model else "❌ Not loaded")
+            
+            if st.session_state.rag_system.index:
+                st.write("**Vector Index:**", f"✅ {st.session_state.rag_system.index.ntotal} documents indexed")
+            else:
+                st.write("**Vector Index:**", "❌ No index created")
+            
+            st.write("**Total Document Chunks:**", len(st.session_state.rag_system.documents))
+            st.write("**Gemini API:**", "✅ Configured" if st.session_state.gemini_configured else "❌ Not configured")
+            
+            # Memory usage approximation
+            import sys
+            total_size = sum(sys.getsizeof(doc) for doc in st.session_state.rag_system.documents)
+            st.write("**Approximate Memory Usage:**", f"{total_size / 1024 / 1024:.2f} MB")
+            
+            if st.button("Clear Document Cache"):
+                st.session_state.rag_system.documents = []
+                st.session_state.rag_system.document_embeddings = []
+                st.session_state.rag_system.index = None
+                st.success("Document cache cleared!")
 
     # Main chat interface
     st.header("💬 Chat Interface")
