@@ -20,6 +20,8 @@ except ImportError:
 try:
     import PyPDF2
     import docx
+    import openpyxl
+    import xlrd
     HAS_DOC_PROCESSORS = True
 except ImportError:
     HAS_DOC_PROCESSORS = False
@@ -261,6 +263,97 @@ class DocumentProcessor:
         except Exception as e:
             return f"Error processing TXT: {str(e)}"
 
+    @staticmethod
+    def extract_text_from_csv(file):
+        """Extract text from CSV file"""
+        try:
+            # Reset file pointer
+            file.seek(0)
+            df = pd.read_csv(file)
+            
+            # Convert DataFrame to meaningful text
+            text = f"CSV Data Summary:\n"
+            text += f"Total rows: {len(df)}\n"
+            text += f"Columns: {', '.join(df.columns.tolist())}\n\n"
+            
+            # Add column information
+            text += "Column Details:\n"
+            for col in df.columns:
+                text += f"- {col}: {df[col].dtype}\n"
+            
+            text += "\nData Sample:\n"
+            # Convert first few rows to text
+            for idx, row in df.head(10).iterrows():
+                text += f"Row {idx + 1}: "
+                for col, value in row.items():
+                    text += f"{col}={value}, "
+                text += "\n"
+            
+            # Add summary statistics for numeric columns
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                text += "\nNumeric Summary:\n"
+                for col in numeric_cols:
+                    text += f"{col}: min={df[col].min()}, max={df[col].max()}, mean={df[col].mean():.2f}\n"
+            
+            return text
+        except Exception as e:
+            return f"Error processing CSV: {str(e)}"
+
+    @staticmethod
+    def extract_text_from_excel(file):
+        """Extract text from Excel file"""
+        if not HAS_DOC_PROCESSORS:
+            return "Excel processing not available. Install openpyxl and xlrd."
+
+        try:
+            # Reset file pointer
+            file.seek(0)
+            
+            # Try to read as Excel file
+            try:
+                # For .xlsx files
+                df_dict = pd.read_excel(file, sheet_name=None, engine='openpyxl')
+            except:
+                try:
+                    # For .xls files
+                    file.seek(0)
+                    df_dict = pd.read_excel(file, sheet_name=None, engine='xlrd')
+                except:
+                    return "Error: Could not read Excel file. Ensure it's a valid .xlsx or .xls file."
+            
+            text = f"Excel File Analysis:\n"
+            text += f"Number of sheets: {len(df_dict)}\n\n"
+            
+            # Process each sheet
+            for sheet_name, df in df_dict.items():
+                text += f"Sheet: {sheet_name}\n"
+                text += f"  Rows: {len(df)}, Columns: {len(df.columns)}\n"
+                text += f"  Column names: {', '.join(df.columns.astype(str).tolist())}\n"
+                
+                # Add data sample for each sheet
+                if len(df) > 0:
+                    text += f"  Sample data from {sheet_name}:\n"
+                    for idx, row in df.head(5).iterrows():
+                        text += f"    Row {idx + 1}: "
+                        for col, value in row.items():
+                            text += f"{col}={value}, "
+                        text += "\n"
+                
+                # Add summary for numeric columns
+                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) > 0:
+                    text += f"  Numeric summary for {sheet_name}:\n"
+                    for col in numeric_cols:
+                        if not df[col].isna().all():
+                            text += f"    {col}: min={df[col].min()}, max={df[col].max()}, mean={df[col].mean():.2f}\n"
+                
+                text += "\n"
+            
+            return text
+        except Exception as e:
+            return f"Error processing Excel file: {str(e)}"
+
 class RAGSystem:
     def __init__(self):
         self.embeddings_model = None
@@ -482,85 +575,6 @@ class ChatBot:
 
         return response
 
-def show_tunnel_setup():
-    """Show tunnel setup page for Google Colab users"""
-    st.title("🌐 Local Tunnel Setup")
-    st.markdown("### Step 1: Configure your public tunnel URL")
-    
-    # Instructions for different tunnel services
-    with st.expander("📋 Tunnel Setup Instructions", expanded=True):
-        st.markdown("""
-        **For Google Colab users, choose one of these tunnel services:**
-        
-        **Option 1: Using ngrok**
-        ```bash
-        # Install pyngrok
-        !pip install pyngrok
-        
-        # Set your ngrok auth token (get it from https://ngrok.com/)
-        from pyngrok import ngrok
-        ngrok.set_auth_token("YOUR_NGROK_TOKEN")
-        
-        # Create tunnel
-        public_url = ngrok.connect(port=8501)
-        print(f"Public URL: {public_url}")
-        ```
-        
-        **Option 2: Using localtunnel**
-        ```bash
-        # Install localtunnel
-        !npm install -g localtunnel
-        
-        # In a separate cell, run:
-        !lt --port 8501 --subdomain your-unique-name
-        ```
-        
-        **Option 3: Using Cloudflare Tunnel**
-        ```bash
-        # Install cloudflared
-        !wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-        !chmod +x cloudflared-linux-amd64
-        !./cloudflared-linux-amd64 tunnel --url http://localhost:8501
-        ```
-        """)
-    
-    # Input for tunnel URL
-    st.markdown("### Enter your tunnel URL below:")
-    tunnel_url = st.text_input(
-        "Public Tunnel URL",
-        placeholder="https://your-tunnel-url.ngrok.io or https://your-subdomain.loca.lt",
-        help="Enter the complete public URL from your tunnel service (including https://)"
-    )
-    
-    # Validate URL format
-    if tunnel_url:
-        if not tunnel_url.startswith(('http://', 'https://')):
-            st.error("❌ URL must start with http:// or https://")
-        elif '.' not in tunnel_url:
-            st.error("❌ Invalid URL format")
-        else:
-            st.success(f"✅ Tunnel URL looks valid: {tunnel_url}")
-            
-            if st.button("🚀 Continue to Chatbot", type="primary"):
-                st.session_state.tunnel_url = tunnel_url
-                st.session_state.tunnel_configured = True
-                st.rerun()
-    
-    # Additional information
-    st.markdown("---")
-    st.info("""
-    **💡 Tips:**
-    - Make sure your tunnel is running before clicking 'Continue to Chatbot'
-    - The URL should be accessible from your browser
-    - Keep the tunnel running while using the chatbot
-    - If you're using ngrok, remember to set your auth token for persistent URLs
-    """)
-    
-    # Show current configuration status
-    if 'tunnel_url' in st.session_state:
-        st.markdown("### Current Configuration:")
-        st.code(f"Tunnel URL: {st.session_state.tunnel_url}")
-
 # Streamlit App
 def main():
     st.set_page_config(
@@ -569,25 +583,9 @@ def main():
         layout="wide"
     )
 
-    # Check if tunnel is configured
-    if 'tunnel_configured' not in st.session_state:
-        st.session_state.tunnel_configured = False
-    
-    # Show tunnel setup page if not configured
-    if not st.session_state.tunnel_configured:
-        show_tunnel_setup()
-        return
-
     # Main app starts here
     st.title("🏠 Property Management RAG Chatbot")
     st.markdown("Ask questions about your property management data and upload documents for enhanced context.")
-    
-    # Show current tunnel URL in sidebar
-    with st.sidebar:
-        st.success(f"🌐 Connected via: {st.session_state.tunnel_url}")
-        if st.button("🔄 Change Tunnel URL"):
-            st.session_state.tunnel_configured = False
-            st.rerun()
 
     # Initialize session state
     if 'db_manager' not in st.session_state:
@@ -634,8 +632,8 @@ def main():
             st.error("Please install sentence-transformers: `pip install sentence-transformers`")
 
         uploaded_files = st.file_uploader(
-            "Upload documents (PDF, DOCX, TXT)",
-            type=['pdf', 'docx', 'txt'],
+            "Upload documents (PDF, DOCX, TXT, CSV, Excel)",
+            type=['pdf', 'docx', 'txt', 'csv', 'xlsx', 'xls'],
             accept_multiple_files=True,
             help="Upload relevant documents to enhance the chatbot's knowledge base"
         )
@@ -657,10 +655,17 @@ def main():
                         text = DocumentProcessor.extract_text_from_docx(file)
                     elif file.type == "text/plain":
                         text = DocumentProcessor.extract_text_from_txt(file)
+                    elif file.type == "text/csv":
+                        text = DocumentProcessor.extract_text_from_csv(file)
+                    elif file.type in ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                                       "application/vnd.ms-excel"]:
+                        text = DocumentProcessor.extract_text_from_excel(file)
                     else:
+                        st.warning(f"Unsupported file type: {file.type}")
                         continue
 
                     documents.append(text)
+                    st.success(f"✅ Processed: {file.name}")
 
                 if documents:
                     if st.session_state.rag_system.add_documents(documents):
@@ -680,48 +685,6 @@ def main():
         if st.button("Insert Sample Data"):
             insert_sample_data()
             st.success("Sample data inserted!")
-
-        # Installation Instructions
-        st.subheader("📦 Installation")
-        with st.expander("Required Packages"):
-            st.code("""
-pip install streamlit
-pip install google-generativeai
-pip install sentence-transformers
-pip install faiss-cpu
-pip install PyPDF2
-pip install python-docx
-pip install pandas
-pip install numpy
-            """)
-
-        # Colab Setup Instructions
-        st.subheader("🔧 Colab Setup")
-        with st.expander("Complete Colab Setup Guide"):
-            st.markdown("""
-            **Step 1: Install packages**
-            ```python
-            !pip install streamlit google-generativeai sentence-transformers faiss-cpu PyPDF2 python-docx pandas numpy pyngrok
-            ```
-            
-            **Step 2: Setup tunnel**
-            ```python
-            from pyngrok import ngrok
-            import streamlit as st
-            
-            # Set your ngrok token
-            ngrok.set_auth_token("YOUR_TOKEN")
-            
-            # Create tunnel
-            public_url = ngrok.connect(port=8501)
-            print(f"Access your app at: {public_url}")
-            ```
-            
-            **Step 3: Run the app**
-            ```python
-            !streamlit run your_app.py --server.port 8501 --server.enableCORS false
-            ```
-            """)
 
     # Main chat interface
     st.header("💬 Chat Interface")
