@@ -1,0 +1,13 @@
+streamlit>=1.28.0
+pandas>=1.5.0
+sqlite3
+openai>=1.3.0
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.0
+numpy>=1.21.0
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+tempfile
+typing
+json
+datetime
